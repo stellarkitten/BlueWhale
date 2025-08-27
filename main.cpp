@@ -21,6 +21,7 @@ constexpr int bishop_value = 870;
 constexpr int rook_value = 1328;
 constexpr int queen_value = 2610;
 
+// Helper for tables
 constexpr int size = 64;
 
 constexpr int pawn_table[size] = {0, 0, 0, 0, 0, 0, 0, 0, -3, -1, 10, 12, 16, 14, 2, -10, -9, -11, 0, 10, 16, 13, -1, -12, 2, -10, 0, 8, 12, 2, -4, -6, 12, 1, -4, -2, 3, -2, 1, 7, 15, 4, 6, 26, 11, 2, -3, 2, -4, -4, 6, 6, 14, 2, 8, -1, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -35,11 +36,11 @@ constexpr int eval_limit = 31800;
 long long nodes = 0;
 
 
-// Helper for evaluation_function
+// Helper for evaluate
 static int flip_square(const int square) { return Square(square).flip().index(); }
 
 
-static int evaluation_function (const Board &board)
+static int evaluate(const Board& board)
 {
     // Get white pieces
     Bitboard white_pawn = board.pieces(pawn, white);
@@ -85,8 +86,10 @@ static int quiesce(int alpha, const int beta, Board& board)
 
     ++ nodes;
 
+    int best_value = evaluate(board);
+        
     // If black to move, get negative best_value
-    int best_value = evaluation_function(board) * (board.sideToMove() == white ? 1 : -1);
+    best_value *= (board.sideToMove() == white ? 1 : -1);
 
     if (best_value >= beta) return best_value;
     if (best_value > alpha) alpha = best_value;
@@ -122,12 +125,34 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
     // 0 evaluation if 50-move rule or 3-fold repetition
     if (board.isHalfMoveDraw() || board.isRepetition(1)) return 0;
 
-    // Get moves
-    Movelist moves;
-    movegen::legalmoves<movegen::MoveGenType::ALL>(moves, board);
+    // Get captures
+    Movelist captures;
+    movegen::legalmoves<movegen::MoveGenType::CAPTURE>(captures, board);
+
+    // Get quiet moves
+    Movelist quiet_moves;
+    movegen::legalmoves<movegen::MoveGenType::QUIET>(quiet_moves, board);
+
+    // Order captures before quiet moves
+    Movelist moves = captures;
+    for (const Move move : quiet_moves) moves.add(move);
 
     // eval_limit evaluation if checkmate or 0 evaluation if stalemate
     if (moves.empty()) return board.inCheck() ? -eval_limit : 0;
+
+    // Order pv before moves
+    if (!pv.empty())
+    {
+        Move pv_move = pv[0];
+        for (int i = 0; i < moves.size(); ++ i)
+        {
+            if (moves[i] == pv_move)
+            {
+                if (i != 0) std::swap(moves[0], moves[i]);
+                break;
+            }
+        }
+    }
 
     int best_value = -eval_limit;
 
@@ -224,7 +249,7 @@ int main()
 
         else if (token == "uci")
         {
-            std::cout << "id name BlueWhale-v1-0\n"
+            std::cout << "id name BlueWhale-v1-1\n"
                       << "id author StellarKitten\n"
                       << "uciok\n";
         }
