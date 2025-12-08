@@ -26,6 +26,7 @@ constexpr int queen_value = 950;
 constexpr int size = 64;
 
 // Data: https://github.com/official-stockfish/Stockfish
+// Middlegame and endgame tables are averaged, then normalized to 0, then rounded to the nearest integer
 
 constexpr int pawn_table[size] = { 0, 0, 0, 0, 0, 0, 0, 0, -6, -4, 7, 8, 13, 10, -2, -14, -12, -14, -3, 7, 13, 10, -4, -16, -1, -13, -3, 5, 9, -1, -8, -9, 8, -2, -8, -5, 0, -5, -2, 4, 12, 0, 3, 22, 8, -1, -6, -2, -7, -7, 2, 2, 11, -2, 5, -4, 0, 0, 0, 0, 0, 0, 0, 0 };
 constexpr int knight_table[size] = { -109, -52, -35, -20, -20, -35, -52, -109, -45, -21, 4, 23, 23, 4, -21, -45, -24, 5, 26, 47, 47, 26, 5, -24, -8, 30, 53, 65, 65, 53, 30, -8, -13, 25, 53, 72, 72, 53, 25, -13, -3, 16, 48, 62, 62, 48, 16, -3, -41, -12, 3, 51, 51, 3, -12, -41, -124, -59, -29, 5, 5, -29, -59, -124 };
@@ -39,8 +40,11 @@ constexpr int eval_limit = 31800;
 long long nodes = 0;
 
 
-// Helper for evaluate
-static int flip_square(const int square) { return Square(square).flip().index(); }
+static int flip_square(const int square)
+{
+    // Helper for evaluate
+    return Square(square).flip().index();
+}
 
 
 static int evaluate(const Board& board)
@@ -99,11 +103,11 @@ static int quiesce(int alpha, const int beta, Board& board)
     Movelist captures;
     movegen::legalmoves<movegen::MoveGenType::CAPTURE>(captures, board);
 
-    for (const Move& capture : captures)
+    for (const Move& i : captures)
     {
-        board.makeMove(capture);
+        board.makeMove(i);
         const int score = -quiesce(-beta, -alpha, board);
-        board.unmakeMove(capture);
+        board.unmakeMove(i);
 
         if (score >= beta) return score;
         if (score > best_value) best_value = score;
@@ -126,49 +130,39 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
     // 0 evaluation if 50-move rule or 3-fold repetition
     if (board.isHalfMoveDraw() || board.isRepetition(1)) return 0;
 
-    // Get captures
-    Movelist captures;
-    movegen::legalmoves<movegen::MoveGenType::CAPTURE>(captures, board);
-
-    // Get quiet moves
-    Movelist quiet_moves;
-    movegen::legalmoves<movegen::MoveGenType::QUIET>(quiet_moves, board);
-
-    // Order captures before quiet moves
-    Movelist moves = captures;
-    for (const Move move : quiet_moves) moves.add(move);
+    // Get moves
+    Movelist moves;
+    movegen::legalmoves<movegen::MoveGenType::ALL>(moves, board);
 
     // eval_limit evaluation if checkmate or 0 evaluation if stalemate
     if (moves.empty()) return board.inCheck() ? -eval_limit : 0;
 
+    // Order captures before quiet moves
+    std::stable_partition(moves.begin(), moves.end(), [&](const Move& i) { return board.isCapture(i); });
+
     // Order pv before moves
     if (!pv.empty())
     {
-        Move pv_move = pv[0];
-        for (int i = 0; i < moves.size(); ++ i)
-        {
-            if (moves[i] == pv_move)
-            {
-                if (i != 0) std::swap(moves[0], moves[i]);
-                break;
-            }
-        }
+        const Move pv_move = pv[0];
+        const Movelist::iterator it = std::find(moves.begin(), moves.end(), pv_move);
+
+        if (it != moves.begin() && it != moves.end()) std::swap(moves[0], *it);
     }
 
     int best_value = -eval_limit;
 
-    for (const Move& move : moves)
+    for (const Move& i : moves)
     {
-        board.makeMove(move);
+        board.makeMove(i);
         std::vector<Move> child_pv;
         const int score = -alpha_beta(-beta, -alpha, depth_left - 1, board, child_pv);
-        board.unmakeMove(move);
+        board.unmakeMove(i);
 
         if (score > best_value)
         {
             best_value = score;
             if (score > alpha) alpha = score;
-            pv = {move};
+            pv = {i};
             pv.insert(pv.end(), child_pv.begin(), child_pv.end());
         }
 
@@ -213,7 +207,7 @@ int main()
                           << " time " << time
                           << " nodes " << nodes
                           << " nps " << nps
-                          << " pv "; for (const Move& move : pv) std::cout << uci::moveToUci(move) << " ";
+                          << " pv "; for (const Move& i : pv) std::cout << uci::moveToUci(i) << " ";
                 std::cout << std::endl;
             }
         }
@@ -250,7 +244,7 @@ int main()
 
         else if (token == "uci")
         {
-            std::cout << "id name BlueWhale-v1-2\n"
+            std::cout << "id name BlueWhale-v1-3\n"
                       << "id author StellarKitten\n"
                       << "uciok\n";
         }
