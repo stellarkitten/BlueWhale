@@ -36,7 +36,6 @@ constexpr int queen_table[size] = { -23, -21, -16, -1, -1, -16, -21, -23, -19, -
 constexpr int king_table[size] = { 3, 53, 45, 4, 4, 45, 53, 3, 33, 69, 51, 24, 24, 51, 69, 33, 9, 61, 36, 15, 15, 36, 61, 9, 1, 40, 22, 2, 2, 22, 40, 1, -8, 40, 19, 2, 2, 19, 40, -8, -25, 26, 0, -22, -22, 0, 26, -25, -65, -12, -42, -51, -51, -42, -12, -65, -98, -59, -74, -94, -94, -74, -59, -98 };
 
 constexpr int eval_limit = 31800;
-
 long long nodes = 0;
 
 
@@ -145,7 +144,6 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
     {
         const Move pv_move = pv[0];
         const Movelist::iterator it = std::find(moves.begin(), moves.end(), pv_move);
-
         if (it != moves.begin() && it != moves.end()) std::swap(moves[0], *it);
     }
 
@@ -153,20 +151,22 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
 
     for (const Move& i : moves)
     {
-        board.makeMove(i);
         std::vector<Move> child_pv;
+        board.makeMove(i);
         const int score = -alpha_beta(-beta, -alpha, depth_left - 1, board, child_pv);
         board.unmakeMove(i);
 
+        if (score >= beta) return score;
         if (score > best_value)
         {
             best_value = score;
-            if (score > alpha) alpha = score;
-            pv = {i};
-            pv.insert(pv.end(), child_pv.begin(), child_pv.end());
+            if (score > alpha)
+            {
+                alpha = score;
+                pv = { i };
+                pv.insert(pv.end(), child_pv.begin(), child_pv.end());
+            }
         }
-
-        if (score >= beta) return best_value;
     }
 
     return best_value;
@@ -175,21 +175,20 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
 
 int main()
 {
-    std::string input;
     Board board = Board();
+    std::string input;
 
     while (std::getline(std::cin, input))
     {
         std::istringstream iss(input);
-        std::string token;
-        iss >> token;
+        std::string command;
+        iss >> command;
 
-        if (token == "go")
+        if (command == "go")
         {
             int depth = 0;
             std::vector<Move> pv;
-            
-            const std::chrono::time_point<std::chrono::system_clock> start_time = std::chrono::system_clock::now();
+            const std::chrono::time_point<std::chrono::steady_clock> start_time = std::chrono::steady_clock::now();
             nodes = 0;
             
             while (true)
@@ -197,60 +196,64 @@ int main()
                 ++ depth;
 
                 const int score = alpha_beta(-eval_limit, eval_limit, depth, board, pv);
+                const long long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count();
 
-                const long long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start_time).count();
-
-                const long long nps = (time > 0 ? static_cast<long long>(nodes) * 1000 / time : 0);
+                // Multiply by 1000 to convert millisecond to second
+                const long long nps = (time > 0 ? nodes * 1000 / time : 0);
 
                 std::cout << "info depth " << depth
                           << " score cp " << score
                           << " time " << time
                           << " nodes " << nodes
                           << " nps " << nps
-                          << " pv "; for (const Move& i : pv) std::cout << uci::moveToUci(i) << " ";
+                          << " pv ";
+                for (const Move& i : pv) std::cout << uci::moveToUci(i) << " ";
                 std::cout << std::endl;
             }
         }
 
-        else if (token == "position")
+        else if (command == "position")
         {
-            std::string sub;
-            iss >> sub;
+            std::string subcommand;
+            std::string argument;
+            iss >> subcommand;
 
-            if (sub == "startpos") board = Board();
-
-            else if (sub == "fen")
+            if (subcommand == "startpos")
             {
-                std::string fen, part;
-                for (int i = 0; i < 6 && iss >> part; ++ i) fen += (i > 0 ? " " : "") + part;
+                board = Board();
+
+                // Remove "moves" from argument
+                iss >> argument;
+            }
+
+            else if (subcommand == "fen")
+            {
+                std::string fen;
+                while (iss >> argument && argument != "moves") fen += argument + " ";
                 board = Board(fen);
             }
 
-            while (iss >> sub)
+            std::vector<std::string> moves;
+            while (iss >> argument) moves.push_back(argument);
+
+            for (const std::string& i : moves)
             {
-                if (sub == "moves")
-                {
-                    std::string move_string;
-                    while (iss >> move_string)
-                    {
-                        Move move = uci::uciToMove(board, move_string);
-                        board.makeMove(move);
-                    }
-                }
+                Move move = uci::uciToMove(board, i);
+                board.makeMove(move);
             }
         }
 
-        else if (token == "quit") break;
+        else if (command == "quit") break;
 
-        else if (token == "uci")
+        else if (command == "uci")
         {
-            std::cout << "id name BlueWhale-v1-3\n"
+            std::cout << "id name BlueWhale-v1-4\n"
                       << "id author StellarKitten\n"
                       << "uciok\n";
         }
 
-        else if (token == "ucinewgame") board = Board();
+        else if (command == "ucinewgame") board = Board();
 
-        else if (token == "isready") std::cout << "readyok\n";
+        else if (command == "isready") std::cout << "readyok\n";
     }
 }
