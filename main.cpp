@@ -15,7 +15,6 @@ constexpr Color white = Color::WHITE;
 constexpr Color black = Color::BLACK;
 
 // Data: https://arxiv.org/pdf/2009.04374
-
 constexpr int pawn_value = 100;
 constexpr int knight_value = 305;
 constexpr int bishop_value = 333;
@@ -27,7 +26,6 @@ constexpr int size = 64;
 
 // Data: https://github.com/official-stockfish/Stockfish
 // Middlegame and endgame tables are averaged, then normalized to 0, then rounded to the nearest integer
-
 constexpr int pawn_table[size] = { 0, 0, 0, 0, 0, 0, 0, 0, -6, -4, 7, 8, 13, 10, -2, -14, -12, -14, -3, 7, 13, 10, -4, -16, -1, -13, -3, 5, 9, -1, -8, -9, 8, -2, -8, -5, 0, -5, -2, 4, 12, 0, 3, 22, 8, -1, -6, -2, -7, -7, 2, 2, 11, -2, 5, -4, 0, 0, 0, 0, 0, 0, 0, 0 };
 constexpr int knight_table[size] = { -109, -52, -35, -20, -20, -35, -52, -109, -45, -21, 4, 23, 23, 4, -21, -45, -24, 5, 26, 47, 47, 26, 5, -24, -8, 30, 53, 65, 65, 53, 30, -8, -13, 25, 53, 72, 72, 53, 25, -13, -3, 16, 48, 62, 62, 48, 16, -3, -41, -12, 3, 51, 51, 3, -12, -41, -124, -59, -29, 5, 5, -29, -59, -124 };
 constexpr int bishop_table[size] = { -33, -7, -11, -7, -7, -11, -7, -33, -13, 4, 6, 7, 7, 6, 4, -13, -3, 12, 3, 15, 15, 3, 12, -3, -4, 7, 14, 25, 25, 14, 7, -4, -5, 15, 8, 22, 22, 8, 15, -5, -11, 9, 7, 11, 11, 7, 9, -11, -12, -7, 7, 6, 6, 7, -7, -12, -28, -9, -13, -11, -11, -13, -9, -28 };
@@ -128,6 +126,16 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
 
     // 0 evaluation if 50-move rule or 3-fold repetition
     if (board.isHalfMoveDraw() || board.isRepetition(1)) return 0;
+
+    // Source: https://www.chessprogramming.org/Null_Move_Pruning
+    if (!board.inCheck())
+    {
+        board.makeNullMove();
+        const int score = -alpha_beta(-beta, -beta + 1, 0, board, pv);
+        board.unmakeNullMove();
+
+        if (score >= beta) return score;
+    }
 
     // Get moves
     Movelist moves;
@@ -247,7 +255,7 @@ int main()
 
         else if (command == "uci")
         {
-            std::cout << "id name BlueWhale-v1-4\n"
+            std::cout << "id name BlueWhale-v1-5\n"
                       << "id author StellarKitten\n"
                       << "uciok\n";
         }
