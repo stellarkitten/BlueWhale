@@ -124,8 +124,11 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
     // Quiesce if end of alpha beta
     if (depth_left == 0) return quiesce(alpha, beta, board);
 
-    // 0 evaluation if 50-move rule or 3-fold repetition
-    if (board.isHalfMoveDraw() || board.isRepetition(1)) return 0;
+    // eval_limit evaluation if checkmate occurs at 50-move rule or 0 evaluation if 50-move rule
+    if (board.isHalfMoveDraw()) return board.getHalfMoveDrawType().first == GameResultReason::CHECKMATE ? -eval_limit : 0;
+
+    // 0 evaluation if threefold repetition or insufficient material
+    if (board.isRepetition(1) || board.isInsufficientMaterial()) return 0;
 
     // Source: https://www.chessprogramming.org/Null_Move_Pruning
     if (!board.inCheck())
@@ -255,7 +258,7 @@ int main()
 
         else if (command == "uci")
         {
-            std::cout << "id name BlueWhale-v1-5\n"
+            std::cout << "id name BlueWhale-v1-6\n"
                       << "id author StellarKitten\n"
                       << "uciok\n";
         }
