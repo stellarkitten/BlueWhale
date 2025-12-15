@@ -4,7 +4,7 @@
 
 using namespace chess;
 
-constexpr PieceType piece_types[] = { PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::QUEEN, PieceType::KING };
+constexpr PieceType piece_types[6] = { PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::QUEEN, PieceType::KING };
 
 constexpr Color white = Color::WHITE;
 constexpr Color black = Color::BLACK;
@@ -12,7 +12,7 @@ constexpr Color black = Color::BLACK;
 constexpr GameResultReason checkmate = GameResultReason::CHECKMATE;
 
 // Data: https://arxiv.org/pdf/2009.04374
-constexpr int piece_value[] = { 100, 305, 333, 563, 950, 0 };
+constexpr int piece_value[6] = { 100, 305, 333, 563, 950, 0 };
 
 // Data: https://github.com/official-stockfish/Stockfish
 // Middlegame and endgame tables are averaged, then normalized to 0, then rounded to the nearest integer
@@ -29,10 +29,10 @@ constexpr int piece_table[6][64] =
 constexpr int eval_limit = 31800;
 constexpr int R = 4;
 
-long long nodes = 0;
+long long nodes;
 
 
-static int evaluate(const Board& board)
+inline static int evaluate(const Board& board)
 {
     int evaluation = 0;
 
@@ -49,6 +49,9 @@ static int evaluate(const Board& board)
 }
 
 
+inline static int mvv_lva(const Board& board, const Move& move) { return piece_value[board.at(move.to()).type()] - piece_value[board.at(move.from()).type()]; }
+
+
 static int quiesce(int alpha, const int beta, Board& board)
 {
     ++ nodes;
@@ -63,6 +66,9 @@ static int quiesce(int alpha, const int beta, Board& board)
     Movelist captures;
     movegen::legalmoves<movegen::MoveGenType::CAPTURE>(captures, board);
 
+    // Order captures by MVV-LVA
+    std::sort(captures.begin(), captures.end(), [&](const Move& i, const Move& j) { return mvv_lva(board, i) > mvv_lva(board, j); });
+
     for (const Move& i : captures)
     {
         board.makeMove(i);
@@ -75,6 +81,22 @@ static int quiesce(int alpha, const int beta, Board& board)
     }
 
     return best_value;
+}
+
+
+inline static int order_pst(const Board& board, const Move& move)
+{
+    const Square square = move.from();
+
+    const Piece piece = board.at(square);
+    const PieceType piece_type = piece.type();
+
+    int to = move.to().index();
+    int from = square.index();
+
+    if (piece.color() == black) { to ^= 56; from ^= 56; }
+
+    return piece_table[piece_type][to] - piece_table[piece_type][from];
 }
 
 
@@ -108,22 +130,28 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
     // eval_limit evaluation if checkmate or 0 evaluation if stalemate
     if (moves.empty()) return board.inCheck() ? -eval_limit : 0;
 
-    // Order captures before quiet moves
-    std::stable_partition(moves.begin(), moves.end(), [&](const Move& i) { return board.isCapture(i); });
-
-    // Order pv before moves
+    // Order PV first
     if (!pv.empty())
     {
-        const Move pv_move = pv[0];
-        const Movelist::iterator it = std::find(moves.begin(), moves.end(), pv_move);
-        if (it != moves.begin() && it != moves.end()) std::swap(moves[0], *it);
+        const Movelist::iterator it = std::find(moves.begin(), moves.end(), pv[0]);
+        if (it != moves.end()) std::swap(moves[0], *it);
     }
 
+    // Order captures before quiet moves
+    const Movelist::iterator it = std::stable_partition(moves.begin(), moves.end(), [&](const Move& i) { return board.isCapture(i); });
+
+    // Order captures by MVV-LVA
+    std::sort(moves.begin(), it, [&](const Move& i, const Move& j) { return mvv_lva(board, i) > mvv_lva(board, j); });
+
+    // Order quiet moves by PST
+    std::sort(it, moves.end(), [&](const Move& i, const Move& j) { return order_pst(board, i) > order_pst(board, j); });
+
     int best_value = -eval_limit;
+    std::vector<Move> child_pv;
 
     for (const Move& i : moves)
     {
-        std::vector<Move> child_pv;
+        child_pv.clear();
         board.makeMove(i);
         const int score = -alpha_beta(-beta, -alpha, depth_left - 1, board, child_pv);
         board.unmakeMove(i);
@@ -135,8 +163,8 @@ static int alpha_beta(int alpha, const int beta, const int depth_left, Board& bo
             if (score > alpha)
             {
                 alpha = score;
-                pv = { i };
-                pv.insert(pv.end(), child_pv.begin(), child_pv.end());
+                pv = child_pv;
+                pv.insert(pv.begin(), i);
             }
         }
     }
@@ -165,7 +193,7 @@ int main()
 
             while (true)
             {
-                ++depth;
+                ++ depth;
 
                 const int score = alpha_beta(-eval_limit, eval_limit, depth, board, pv);
                 const long long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count();
@@ -174,12 +202,12 @@ int main()
                 const long long nps = (time > 0 ? nodes * 1000 / time : 0);
 
                 std::cout << "info depth " << depth
-                    << " score cp " << score
-                    << " time " << time
-                    << " nodes " << nodes
-                    << " nps " << nps
-                    << " pv ";
-                for (const Move& i : pv) std::cout << uci::moveToUci(i) << " ";
+                          << " score cp " << score
+                          << " time " << time
+                          << " nodes " << nodes
+                          << " nps " << nps
+                          << " pv";
+                for (const Move& i : pv) std::cout << " " << uci::moveToUci(i);
                 std::cout << std::endl;
             }
         }
@@ -219,9 +247,9 @@ int main()
 
         else if (command == "uci")
         {
-            std::cout << "id name BlueWhale-v1-7\n"
-                << "id author StellarKitten\n"
-                << "uciok\n";
+            std::cout << "id name BlueWhale-v1-8\n"
+                      << "id author StellarKitten\n"
+                      << "uciok\n";
         }
 
         else if (command == "ucinewgame") board = Board();
