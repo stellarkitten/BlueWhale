@@ -32,33 +32,19 @@ static constexpr int pst_eg[6][64] =
     { 1, 45, 85, 76, 76, 85, 45, 1, 53, 100, 133, 135, 135, 133, 100, 53, 88, 130, 169, 175, 175, 169, 130, 88, 103, 156, 172, 172, 172, 172, 156, 103, 96, 166, 199, 199, 199, 199, 166, 96, 92, 172, 184, 191, 191, 184, 172, 92, 47, 121, 116, 131, 131, 116, 121, 47, 11, 59, 73, 78, 78, 73, 59, 11 }
 };
 
+// Tempo data (release 13): https://github.com/official-stockfish/Stockfish
+static constexpr int tempo_value = 28;
+
 static constexpr int phase_limit = 30;
 static constexpr int flip_const = 56;
 static constexpr int eval_limit = 31800;
-static constexpr int R = 4;
 
 static int64_t nodes = 0;
 
 
-static struct tt_entry
-{
-    uint64_t hash = 0;
-    int depth = 0;
-    int score = 0;
-    Move move = Move::NULL_MOVE;
-};
-
-
-// Each TT entry is 8 + 4 + 4 + 2 = 20 B
-// 1 GB / 20 B = 5E7
-// In the future, implement TT size as a UCI command
-static constexpr size_t tt_size = 5E7;
-static std::vector<tt_entry> tt(tt_size);
-
-
 static inline int evaluate(const Board& board)
 {
-    // King not included in phase calculation
+    // King not included in phase
     int phase = -2;
     int mg = 0;
     int eg = 0;
@@ -89,7 +75,16 @@ static inline int evaluate(const Board& board)
         }
     }
 
-    return (mg * phase + eg * (phase_limit - phase)) / phase_limit;
+    // Get side to move
+    const int stm = board.sideToMove() == Color::WHITE ? 1 : -1;
+
+    // Add/subtract tempo
+    const int tempo = tempo_value * stm;
+    mg += tempo;
+    eg += tempo;
+
+    // If black to move, return negative evaluation
+    return (mg * phase + eg * (phase_limit - phase)) / phase_limit * stm;
 }
 
 
@@ -100,15 +95,14 @@ static int quiesce(int alpha, const int beta, Board& board)
 {
     ++nodes;
 
-    // If black to move, get negative best_value
-    int best_value = evaluate(board) * (board.sideToMove() == Color::WHITE ? 1 : -1);
+    int best = evaluate(board);
 
-    if (best_value >= beta) return best_value;
+    if (best >= beta) return best;
 
     // Delta pruning
-    if (best_value < alpha - piece_values[4]) return alpha;
+    if (best + 200 < alpha) return alpha;
 
-    if (best_value > alpha) alpha = best_value;
+    if (best > alpha) alpha = best;
 
     // Get captures
     Movelist captures;
@@ -125,30 +119,16 @@ static int quiesce(int alpha, const int beta, Board& board)
         board.unmakeMove(i);
 
         if (score >= beta) return score;
-        if (score > best_value) best_value = score;
+        if (score > best) best = score;
         if (score > alpha) alpha = score;
     }
 
-    return best_value;
+    return best;
 }
 
 
-static inline int order_pst(const Board& board, const Move& move)
+static inline int order_pst(const Board& board, const int phase, const int flip, const Move& move)
 {
-    // King not included in phase calculation
-    int phase = -2;
-
-    // Loop through all piece types
-    for (const PieceType& i : piece_types)
-    {
-        // Get pieces
-        Bitboard wp = board.pieces(i, Color::WHITE);
-        Bitboard bp = board.pieces(i, Color::BLACK);
-
-        // Add number of pieces to phase
-        phase += wp.count() + bp.count();
-    }
-
     // Get piece start and end location
     const Square sq_from = move.from();
     const Square sq_to = move.to();
@@ -156,9 +136,6 @@ static inline int order_pst(const Board& board, const Move& move)
     // Get piece and piece type
     const Piece piece = board.at(sq_from);
     const PieceType pt = piece.type();
-
-    // Calculate flip
-    const int flip = (piece.color() == Color::BLACK) * flip_const;
 
     // Get and flip index
     const int from = sq_from.index() ^ flip;
@@ -172,35 +149,44 @@ static inline int order_pst(const Board& board, const Move& move)
 }
 
 
-static int negamax(int alpha, const int beta, const int depth_left, Board& board, std::vector<Move>& pv)
+static int negamax(int alpha, const int beta, const int depth, Board& board, std::vector<Move>& pv)
 {
     ++nodes;
-
-    // Quiesce if depth is 0
-    if (depth_left == 0) return quiesce(alpha, beta, board);
 
     // eval_limit evaluation if checkmate occurs at 50-move rule or 0 evaluation if 50-move rule
     if (board.isHalfMoveDraw()) return board.getHalfMoveDrawType().first == GameResultReason::CHECKMATE ? -eval_limit : 0;
 
     // 0 evaluation if threefold repetition or insufficient material
     if (board.isRepetition(1) || board.isInsufficientMaterial()) return 0;
-    
-    // Get Zobrist hash and probe TT
-    const uint64_t hash = board.zobrist();
-    tt_entry& entry = tt[hash & (tt_size - 1)];
-    const bool hash_exist = (entry.hash == hash);
 
-    // Evaluation from higher depth if hash in TT
-    if (hash_exist && entry.depth >= depth_left) { return entry.score; }
+    // Quiesce if depth is 0
+    if (depth == 0) return quiesce(alpha, beta, board);
 
     // Null move pruning
-    if (!board.inCheck() && depth_left >= R)
+    if (!board.inCheck() && depth >= 4)
     {
+        int r = 4 + depth / 3;
+        r = std::min(r, depth - 1);
+
         board.makeNullMove();
-        const int score = -negamax(-beta, -beta + 1, depth_left - R, board, pv);
+        const int score = -negamax(-beta, -beta + 1, depth - r, board, pv);
         board.unmakeNullMove();
 
         if (score >= beta) return score;
+    }
+
+    const bool depth1 = (depth == 1);
+    int evaluation = 0;
+
+    if (depth1)
+    {
+        evaluation = evaluate(board);
+    
+        // Reverse futility pruning
+        if (evaluation - 150 >= beta) return evaluation;
+    
+        // Razoring
+        if (evaluation + 300 <= alpha) return quiesce(alpha, beta, board);
     }
 
     // Get moves
@@ -210,20 +196,12 @@ static int negamax(int alpha, const int beta, const int depth_left, Board& board
     // eval_limit evaluation if checkmate or 0 evaluation if stalemate
     if (moves.empty()) return board.inCheck() ? -eval_limit : 0;
 
-    const bool pv_empty = pv.empty();
     int loc = 0;
 
     // Order PV move first
-    if (!pv_empty)
+    if (!pv.empty())
     {
         const Movelist::iterator it = std::find(moves.begin(), moves.end(), pv[0]);
-        if (it != moves.end()) std::swap(*it, moves[loc]), loc++;
-    }
-
-    // Order TT move second
-    if (hash_exist)
-    {
-        const Movelist::iterator it = std::find(moves.begin() + loc, moves.end(), entry.move);
         if (it != moves.end()) std::swap(*it, moves[loc]), loc++;
     }
 
@@ -233,12 +211,29 @@ static int negamax(int alpha, const int beta, const int depth_left, Board& board
     // Order captures first by MVV-LVA
     std::sort(moves.begin() + loc, it, [&](const Move& i, const Move& j) { return mvv_lva(board, i) > mvv_lva(board, j); });
 
+    // King not included in phase
+    int phase = -2;
+
+    // Loop through all piece types
+    for (const PieceType& i : piece_types)
+    {
+        // Get pieces
+        Bitboard wp = board.pieces(i, Color::WHITE);
+        Bitboard bp = board.pieces(i, Color::BLACK);
+
+        // Add number of pieces to phase
+        phase += wp.count() + bp.count();
+    }
+
+    // Get flip
+    const int flip = board.sideToMove() == Color::WHITE ? 0 : flip_const;
+
     // Order quiet moves by PST
-    std::sort(it, moves.end(), [&](const Move& i, const Move& j) { return order_pst(board, i) > order_pst(board, j); });
+    std::sort(it, moves.end(), [&](const Move& i, const Move& j) { return order_pst(board, phase, flip, i) > order_pst(board, phase, flip, j); });
 
     int move_count = 0;
     std::vector<Move> child_pv;
-    int best_value = -eval_limit;
+    int best = -eval_limit;
 
     // Loop through all moves
     for (const Move& i : moves)
@@ -247,44 +242,45 @@ static int negamax(int alpha, const int beta, const int depth_left, Board& board
         child_pv.clear();
         int score = 0;
 
+        // Futility pruning
+        if (depth1 && evaluation + 300 <= alpha) continue;
+
         board.makeMove(i);
 
         // Late move reduction
-        if (depth_left >= 2)
+        if (depth >= 2)
         {
-            const int reduction = static_cast<int>(std::round(log(depth_left) * log(move_count) / 2));
-            score = -negamax(-beta, -alpha, depth_left - 1 - reduction, board, child_pv);
+            int r = static_cast<int>(std::round(1 + log(depth) * log(move_count) / 3));
+            r = std::min(r, depth - 1);
+            score = -negamax(-beta, -alpha, depth - 1 - r, board, child_pv);
 
-            if (score > alpha) { score = -negamax(-beta, -alpha, depth_left - 1, board, child_pv); }
+            if (score > alpha) { score = -negamax(-beta, -alpha, depth - 1, board, child_pv); }
         }
         
-        else { score = -negamax(-beta, -alpha, depth_left - 1, board, child_pv); }
+        else { score = -negamax(-beta, -alpha, depth - 1, board, child_pv); }
         
         board.unmakeMove(i);
 
-        if (score >= beta) return score;
-        if (score > best_value)
+        if (score >= beta)
         {
-            best_value = score;
+            pv = child_pv;
+            pv.insert(pv.begin(), i);
+            return score;
+        }
+
+        if (score > best)
+        {
+            best = score;
             if (score > alpha)
             {
-                alpha = score;
                 pv = child_pv;
                 pv.insert(pv.begin(), i);
+                alpha = score;
             }
         }
     }
 
-    // Append entry to TT if no entry or at higher depth
-    if (!hash_exist || depth_left >= entry.depth)
-    {
-        entry.hash = hash;
-        entry.score = best_value;
-        entry.depth = depth_left;
-        entry.move = pv_empty ? Move::NULL_MOVE : pv[0];
-    }
-
-    return best_value;
+    return best;
 }
 
 
@@ -362,7 +358,7 @@ int main()
 
         else if (command == "uci")
         {
-            std::cout << "id name BlueWhale-v1-9\n"
+            std::cout << "id name BlueWhale-v1-10\n"
                       << "id author StellarKitten\n"
                       << "uciok\n";
         }
